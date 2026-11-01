@@ -1,0 +1,25 @@
+[project]
+name = "landslide-bench"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "h3>=4.1,<5",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<3",
+    "pyarrow>=18,<21",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+    "jupyterlab>=4.6.5",
+    "pyspark==4.0.2",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["jobs"]
+
+[tool.ruff]
+line-length = 100
