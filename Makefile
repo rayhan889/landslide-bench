@@ -13,7 +13,7 @@ init:
 	@git rev-parse --git-dir >/dev/null 2>&1 || git init -q
 	uv sync
 	mkdir -p data/raw results/runs results/spark-events
-	chmod a+rwx results/spark-events
+	chmod a+rwx results/spark-events results/runs
 
 build:
 	$(DC) build
