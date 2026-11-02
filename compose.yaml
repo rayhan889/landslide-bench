@@ -1,0 +1,151 @@
+name: landslide
+
+x-hadoop: &hadoop
+  build:
+    context: docker/hadoop
+    args:
+      HADOOP_JRE_IMAGE: ${HADOOP_JRE_IMAGE}
+      HADOOP_VERSION: ${HADOOP_VERSION}
+      HADOOP_SHA512: ${HADOOP_SHA512}
+  image: landslide/hadoop:${HADOOP_VERSION}
+  restart: unless-stopped
+  volumes: &hadoop-conf
+    - ./conf/hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+    - ./conf/hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+
+x-spark: &spark
+  build:
+    context: .
+    dockerfile: docker/spark/Dockerfile
+    args:
+      SPARK_BASE_IMAGE: ${SPARK_BASE_IMAGE}
+      UV_VERSION: ${UV_VERSION}
+      ICEBERG_VERSION: ${ICEBERG_VERSION}
+      ICEBERG_SHA1: ${ICEBERG_SHA1}
+  image: landslide/spark:${SPARK_VERSION}
+  restart: unless-stopped
+  environment:
+    HADOOP_CONF_DIR: /opt/hadoop-conf
+    PYTHONPATH: /workspace/jobs
+    SPARK_DAEMON_MEMORY: 512m
+    SPARK_VERSION: ${SPARK_VERSION}
+  volumes:
+    - ./conf/spark/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+    - ./conf/hadoop:/opt/hadoop-conf:ro
+    - ./jobs:/workspace/jobs:ro
+    - ./scripts:/workspace/scripts:ro
+    - ./results:/workspace/results
+
+services:
+  namenode:
+    <<: *hadoop
+    command: namenode
+    ports: ["9870:9870"]
+    volumes:
+      - hdfs-name:/data/hdfs/name
+      - ./conf/hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./conf/hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./data/raw:/staging:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9870/ >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: "${NAMENODE_CPUS}", memory: "${NAMENODE_MEM}" }
+
+  datanode:
+    <<: *hadoop
+    command: datanode
+    ports: ["9864:9864"]
+    depends_on:
+      namenode: { condition: service_healthy }
+    volumes:
+      - hdfs-data:/data/hdfs/data
+      - ./conf/hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./conf/hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9864/ >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "${DATANODE_CPUS}", memory: "${DATANODE_MEM}" }
+
+  spark-master:
+    <<: *spark
+    command:
+      [
+        "/opt/spark/bin/spark-class",
+        "org.apache.spark.deploy.master.Master",
+        "--host",
+        "spark-master",
+      ]
+    ports: ["8080:8080", "4040:4040"]
+    depends_on:
+      datanode: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/spark-master/7077'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: { cpus: "${SPARK_MASTER_CPUS}", memory: "${SPARK_MASTER_MEM}" }
+
+  spark-worker:
+    <<: *spark
+    command:
+      [
+        "/opt/spark/bin/spark-class",
+        "org.apache.spark.deploy.worker.Worker",
+        "--cores",
+        "${SPARK_WORKER_CORES}",
+        "--memory",
+        "${SPARK_WORKER_MEMORY}",
+        "spark://spark-master:7077",
+      ]
+    ports: ["8081:8081"]
+    depends_on:
+      spark-master: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8081'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: { cpus: "${SPARK_WORKER_CPUS}", memory: "${SPARK_WORKER_MEM}" }
+
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE}
+    platform: ${CLICKHOUSE_PLATFORM}
+    restart: unless-stopped
+    ports: ["8123:8123", "9000:9000"]
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - ch-data:/var/lib/clickhouse
+    depends_on:
+      datanode: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: { cpus: "${CLICKHOUSE_CPUS}", memory: "${CLICKHOUSE_MEM}" }
+
+volumes:
+  hdfs-name:
+  hdfs-data:
+  ch-data:
